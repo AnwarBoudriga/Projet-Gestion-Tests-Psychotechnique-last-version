@@ -1,0 +1,36 @@
+1. Base de données
+
+DROP DATABASE IF EXISTS psytech_pro;
+
+Dans phpMyAdmin, improrter schema.sql et proctoring.sql 
+
+2. Backend node js (Terminal 1)
+cd backend-node
+new file .env
+npm.cmd install
+npm.cmd run seed:admin
+npm.cmd start
+
+3. Backend spring boot (Terminal 1)
+cd proctoring-spring
+Ouvrez src/main/java/com/psytech/proctoring/ProctoringApplication.jav
+Cliquez sur la flèche verte ▶ à côté de main, puis Run.
+Succès : la console affiche Tomcat started on port 8081 et Started ProctoringApplication.
+
+4. Application Admin (Terminal 3)
+cd app-admin
+flutter doctor
+flutter pub get
+flutter run -d chrome --web-port=5001 --dart-define=API_URL=http://localhost:3000
+
+5. Application Entreprise RH (Terminal 4)
+cd app-entreprise
+flutter doctor
+flutter pub get
+flutter run -d chrome --web-port=5002 --dart-define=API_URL=http://localhost:3000
+
+6. Application condidat (Terminal 5)
+cd app-candidat
+flutter doctor
+flutter pub get
+flutter run -d chrome --web-port=5003 --dart-define=API_URL=http://localhost:3000
