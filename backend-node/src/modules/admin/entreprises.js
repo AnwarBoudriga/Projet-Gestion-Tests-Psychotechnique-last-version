@@ -6,6 +6,7 @@ const validate = require('../../middlewares/validate');
 const AppError = require('../../utils/AppError');
 const { generateEnterpriseKey, hashKey } = require('../../utils/keys');
 const { logAction } = require('../../utils/audit');
+const { sendMail } = require('../../utils/mailer');
 
 router.use(requireAuth);
 
@@ -115,8 +116,18 @@ async function issueKey(req, res, regenerate) {
     entite: 'entreprise',
     entiteId: id,
   });
+  // Envoi de la clé par email à l'entreprise (ne bloque jamais la réponse en cas d'échec)
+  const lien = process.env.ENTREPRISE_URL ? `\nAccès : ${process.env.ENTREPRISE_URL}\n` : '';
+  const emailEnvoye = await sendMail({
+    to: entreprise.email,
+    subject: regenerate ? 'Votre nouvelle clé d’accès PsyTech Pro' : 'Votre clé d’accès PsyTech Pro',
+    text:
+      `Bonjour ${entreprise.nom},\n\nVotre espace entreprise PsyTech Pro est ${regenerate ? 'mis à jour' : 'prêt'}.\n\n` +
+      `Votre clé d’accès : ${cle}\n${lien}\nConservez cette clé en lieu sûr et ne la partagez pas.` +
+      `${regenerate ? '\nL’ancienne clé n’est plus valide.' : ''}\n\nCordialement,\nPsyTech Pro`,
+  });
   // La clé en clair n'est renvoyée qu'UNE seule fois.
-  res.json({ cle, message: "Copiez cette clé maintenant: elle ne sera plus affichée. L'ancienne clé (si elle existait) est invalide." });
+  res.json({ cle, emailEnvoye, message: "Copiez cette clé maintenant: elle ne sera plus affichée. L'ancienne clé (si elle existait) est invalide." });
 }
 
 // POST /api/admin/entreprises/:id/cle            -> générer (ENT-XXXXXXXX)

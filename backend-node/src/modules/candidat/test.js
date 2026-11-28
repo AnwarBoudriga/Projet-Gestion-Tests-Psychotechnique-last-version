@@ -18,6 +18,7 @@ const statutEffectif = (inv) => (inv.statut === 'invite' && inv.expiree ? 'expir
 async function finaliser(req, inv) {
   const conn = await db.getConnection();
   let fait = false;
+  let resultat = null;
   try {
     await conn.beginTransaction();
     const [[cur]] = await conn.query('SELECT statut FROM invitations WHERE id = ? FOR UPDATE', [inv.id]);
@@ -30,6 +31,8 @@ async function finaliser(req, inv) {
         [p.id]
       );
       const { score, scoreMax } = await calculerScore(conn, p.id, inv.test_id);
+      const reussi = scoreMax > 0 && score * 100 >= inv.score_minimum * scoreMax;
+      resultat = { score, scoreMax, reussi };
       // date_soumission plafonnée à la fin du temps imparti (soumission automatique)
       await conn.execute(
         `UPDATE passages p
@@ -38,7 +41,7 @@ async function finaliser(req, inv) {
          SET p.date_soumission = LEAST(NOW(), DATE_ADD(p.date_debut, INTERVAL t.duree_minutes MINUTE)),
              p.score = ?, p.score_max = ?, p.est_reussi = ?
          WHERE p.id = ?`,
-        [score, scoreMax, scoreMax > 0 && score * 100 >= inv.score_minimum * scoreMax ? 1 : 0, p.id]
+        [score, scoreMax, reussi ? 1 : 0, p.id]
       );
       await conn.execute(`UPDATE invitations SET statut = 'termine' WHERE id = ?`, [inv.id]);
       fait = true;
@@ -54,11 +57,21 @@ async function finaliser(req, inv) {
     // Surveillance : récupère en arrière-plan le rapport de risque du service Spring (ne bloque jamais le candidat)
     proctoring.collecterPlusTard(inv.id);
     await logAction(req, { action: 'TEST_SOUMIS', entite: 'invitation', entiteId: inv.id });
-    await sendMail({
-      to: inv.email,
-      subject: `Confirmation: test « ${inv.titre} » soumis`,
-      text: `Bonjour ${inv.nom},\n\nNous confirmons la réception de vos réponses au test « ${inv.titre} ». ${inv.entreprise_nom} reviendra vers vous.\n\nMerci et bonne continuation.`,
-    });
+    // Email au candidat (sans attendre : ne ralentit jamais la soumission)
+    if (resultat && resultat.reussi) {
+      const pct = Math.round((resultat.score * 100) / resultat.scoreMax);
+      sendMail({
+        to: inv.email,
+        subject: `Félicitations : vous avez réussi le test « ${inv.titre} »`,
+        text: `Bonjour ${inv.nom},\n\nFélicitations ! Vous avez réussi le test « ${inv.titre} » avec un score de ${resultat.score}/${resultat.scoreMax} (${pct} %).\n\n${inv.entreprise_nom} reviendra vers vous pour la suite du processus.\n\nCordialement,\nPsyTech Pro`,
+      });
+    } else {
+      sendMail({
+        to: inv.email,
+        subject: `Confirmation: test « ${inv.titre} » soumis`,
+        text: `Bonjour ${inv.nom},\n\nNous confirmons la réception de vos réponses au test « ${inv.titre} ». ${inv.entreprise_nom} reviendra vers vous.\n\nMerci et bonne continuation.`,
+      });
+    }
   }
   return fait;
 }
