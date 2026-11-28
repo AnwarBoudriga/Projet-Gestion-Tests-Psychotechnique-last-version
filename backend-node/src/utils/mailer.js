@@ -2,9 +2,10 @@ const nodemailer = require('nodemailer');
 
 /**
  * Envoi d'emails. Ordre de priorité :
- *  1. BREVO_API_KEY  -> API HTTPS de Brevo (fonctionne sur Render gratuit : port 443, jamais bloqué)
- *  2. SMTP_HOST      -> SMTP classique (bloqué sur Render gratuit : ports 25/465/587)
- *  3. rien           -> le mail est affiché dans la console (mode dev)
+ *  1. APPS_SCRIPT_URL -> relais Google Apps Script (envoi depuis votre Gmail, HTTPS, gratuit, sans domaine)
+ *  2. BREVO_API_KEY   -> API HTTPS de Brevo (fonctionne sur Render gratuit : port 443, jamais bloqué)
+ *  3. SMTP_HOST       -> SMTP classique (bloqué sur Render gratuit : ports 25/465/587)
+ *  4. rien            -> le mail est affiché dans la console (mode dev)
  */
 let transporter = null;
 function getTransporter() {
@@ -37,9 +38,36 @@ async function envoyerBrevo({ to, subject, text }) {
   if (!r.ok) throw new Error(`Brevo HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
 }
 
+/** Relais Google Apps Script : le script envoie l'email depuis le compte Gmail du propriétaire. */
+async function envoyerAppsScript({ to, subject, text }) {
+  const r = await fetch(process.env.APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      token: process.env.APPS_SCRIPT_TOKEN,
+      to,
+      subject,
+      text,
+      name: parseFrom(process.env.MAIL_FROM || FROM_DEFAUT).name,
+    }),
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15000),
+  });
+  const brut = await r.text();
+  let rep = null;
+  try { rep = JSON.parse(brut); } catch { /* réponse non JSON (ex: page de connexion Google) */ }
+  if (!r.ok || !rep || rep.ok !== true) {
+    throw new Error(`Apps Script: ${rep && rep.error ? rep.error : `réponse inattendue (HTTP ${r.status})`}`);
+  }
+}
+
 /** Retourne true si l'email est parti, false sinon (ne lève jamais d'erreur). */
 async function sendMail({ to, subject, text }) {
   try {
+    if (process.env.APPS_SCRIPT_URL) {
+      await envoyerAppsScript({ to, subject, text });
+      return true;
+    }
     if (process.env.BREVO_API_KEY) {
       await envoyerBrevo({ to, subject, text });
       return true;
