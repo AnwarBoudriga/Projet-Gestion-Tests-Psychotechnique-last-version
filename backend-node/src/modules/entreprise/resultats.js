@@ -8,6 +8,7 @@ const { toCsv } = require('../../utils/csv');
 const { logAction } = require('../../utils/audit');
 const { parseId } = require('./helpers');
 const proctoring = require('../../utils/proctoring');
+const { sendMail } = require('../../utils/mailer');
 
 const listSchema = z.object({
   testId: z.coerce.number().int().min(1).optional(),
@@ -30,6 +31,21 @@ const fmtRow = (r) => ({
   soumisAt: r.soumis_at,
 });
 
+/** Validations manuelles faites par l'entreprise (journal d'activité): Map invitationId -> date. */
+async function lireValidations(ids) {
+  const map = new Map();
+  if (!ids.length) return map;
+  const [rows] = await db.query(
+    `SELECT entite_id, MAX(created_at) AS at FROM audit_logs
+     WHERE action = 'CANDIDAT_VALIDE' AND entite = 'invitation' AND entite_id IN (?)
+     GROUP BY entite_id`,
+    [ids]
+  );
+  for (const r of rows) map.set(r.entite_id, r.at);
+  return map;
+}
+const champsValidation = (at) => ({ valide: at != null, valideLe: at || null });
+
 function filtre(req, q) {
   const where = ['entreprise_id = ?'];
   const params = [req.user.id];
@@ -45,8 +61,13 @@ router.get('/', validate(listSchema, 'query'), async (req, res) => {
   const [[{ total }]] = await db.query(`SELECT COUNT(*) AS total FROM v_resultats_detail ${w}`, params);
   const [rows] = await db.query(`SELECT * FROM v_resultats_detail ${w} ORDER BY soumis_at DESC LIMIT ? OFFSET ?`, [...params, limit, (page - 1) * limit]);
   const risques = await proctoring.lireResumes(rows.map((r) => r.invitation_id));
+  const validations = await lireValidations(rows.map((r) => r.invitation_id));
   res.json({
-    data: rows.map((r) => ({ ...fmtRow(r), risque: risques.get(r.invitation_id) || null })),
+    data: rows.map((r) => ({
+      ...fmtRow(r),
+      risque: risques.get(r.invitation_id) || null,
+      ...champsValidation(validations.get(r.invitation_id)),
+    })),
     pagination: { page, limit, total: Number(total) },
   });
 });
@@ -80,6 +101,7 @@ async function detail(entrepriseId, invitationId) {
   return {
     ...fmtRow(r),
     risque: await proctoring.lire(invitationId),
+    ...champsValidation((await lireValidations([invitationId])).get(invitationId)),
     questions: qs.map((q) => ({
       position: q.position,
       enonce: q.enonce,
@@ -124,6 +146,38 @@ router.get('/:invitationId/risque', async (req, res) => {
   if (!rapport) throw new AppError(404, 'Aucune donnée de surveillance pour ce candidat.');
   await logAction(req, { action: 'RISQUE_CONSULTE', entite: 'invitation', entiteId: id });
   res.json({ ...rapport, source });
+});
+
+// POST /api/entreprise/resultats/:invitationId/valider
+// Validation MANUELLE par l'entreprise (après avoir consulté le score et le rapport de surveillance):
+// envoie l'email de félicitations au candidat. Rien n'est envoyé automatiquement.
+router.post('/:invitationId/valider', async (req, res) => {
+  const id = parseId(req.params.invitationId);
+  const [[r]] = await db.query(
+    'SELECT * FROM v_resultats_detail WHERE invitation_id = ? AND entreprise_id = ?',
+    [id, req.user.id]
+  );
+  if (!r) throw new AppError(404, 'Résultat introuvable.');
+  if ((await lireValidations([id])).get(id)) throw new AppError(409, 'Ce candidat a déjà été validé.');
+
+  const [[ent]] = await db.query('SELECT nom FROM entreprises WHERE id = ?', [req.user.id]);
+  const entreprise = ent ? ent.nom : 'L’entreprise';
+  const pct = Math.round(Number(r.pourcentage));
+
+  const envoye = await sendMail({
+    to: r.candidat_email,
+    subject: `Félicitations : votre candidature est validée (test « ${r.test_titre} »)`,
+    text:
+      `Bonjour ${r.candidat_nom},\n\n` +
+      `Après examen de votre test « ${r.test_titre} » (score : ${r.score}/${r.score_max}, soit ${pct} %), ` +
+      `${entreprise} a le plaisir de vous informer que votre candidature est validée.\n\n` +
+      `${entreprise} vous contactera prochainement pour la suite du processus.\n\n` +
+      `Cordialement,\nPsyTech Pro`,
+  });
+  if (!envoye) throw new AppError(502, 'L’email n’a pas pu être envoyé. Le candidat n’a pas été validé, réessayez dans un instant.');
+
+  await logAction(req, { action: 'CANDIDAT_VALIDE', entite: 'invitation', entiteId: id, details: { email: r.candidat_email } });
+  res.json({ ok: true, valide: true, valideLe: new Date().toISOString(), emailEnvoye: true });
 });
 
 // GET /api/entreprise/resultats/:invitationId/export.csv
